@@ -1,0 +1,1065 @@
+---
+title: "HEK"
+author: "Thomas"
+date: "27 6 2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+########################################################################
+##TODOs before running                                                ##
+## - set root folder                                                  ##
+## - create input and output paths                                    ##
+## - copy needed shapefiles into the respective folders (see below)   ##
+##                                                                    ##
+##set root folder                                                     ##
+root=""                                                               ##
+setwd(root)                                                           ##
+##                                                                    ##
+##input folders                                                       ##
+##copy all raster data into the raster folder in the root dir         ##
+rasterdir=paste(root,"raster",sep="\\")                               ##
+##copy the polygons at observed block lines (p0.shp, p1.shp, p2.shp and p3.shp) into the aggregation folder (for aggregating mean velocity)
+aggdir=paste(root,"aggregation",sep="\\")                             ##
+##                                                                    ##
+##output folders (create them before running the script)              ##
+vectordir=paste(root,"vectors",sep="\\")                              ##
+maxveldir=paste(root,"max_vel",sep="\\")                              ##
+velvecdir=paste(root,"velocity_vectors",sep="\\")                     ##
+########################################################################
+
+
+library(rgdal)
+library(raster)
+library(sf)
+
+
+##projection MGI_GK_West (EPSG 31254)
+proj="+proj=tmerc +lat_0=0 +lon_0=10.33333333333333 +k=1 +x_0=0 +y_0=-5000000 +ellps=bessel +towgs84=577.326,90.129,463.919,5.137,1.474,5.297,2.4232 +units=m +no_defs"
+epsg=31254
+st_crs(epsg)
+
+##reprocess displacement vectors?
+reprocess=F#T#
+
+
+##function for saga imcorr
+vect_spacing=5#10
+get_imcorr=function(rastdir,vectdir,hs1,hs2,dsm1,dsm2,spacing=vect_spacing){
+  corrpoints=sprintf("%s\\%s_pts.shp",vectdir,substr(hs2,start=1,stop=(nchar(hs2)-5)))
+  corrlines=sprintf("%s\\%s_vect.shp",vectdir,substr(hs2,start=1,stop=(nchar(hs2)-5)))
+  hs1rast=paste(rastdir,gsub(hs1,pattern="sdat",replacement="sgrd"),sep="\\")
+  hs2rast=paste(rastdir,gsub(hs2,pattern="sdat",replacement="sgrd"),sep="\\")
+  dsm1rast=paste(rastdir,gsub(dsm1,pattern="sdat",replacement="sgrd"),sep="\\")
+  dsm2rast=paste(rastdir,gsub(dsm2,pattern="sdat",replacement="sgrd"),sep="\\")
+  cmd=sprintf("saga_cmd grid_analysis 19 -GRID_1 %s -GRID_2 %s -DTM_1 %s -DTM_2 %s -CORRPOINTS %s -CORRLINES %s -SEARCH_CHIPSIZE 3 -REF_CHIPSIZE 2 -GRID_SPACING %i",hs1rast,hs2rast,dsm1rast,dsm2rast,corrpoints,corrlines,spacing)
+  #print(cmd)
+  system(cmd)
+}
+
+
+##funciton for rasterizing point velocities
+rast_vel=function(pts,template,maxdisp=35,minstrength=5,maxerror=10,mode="vel",period,fun=mean){
+  pts_data=pts@data
+  pts_data["x"]=coordinates(pts)[,1]
+  pts_data["y"]=coordinates(pts)[,2]
+  
+  ##filtering
+  ##remove outliers
+  pts_data$DISP_REAL[pts_data$DISP_REAL>maxdisp]=NA
+  ##remove vectors in reverse direction
+  pts_data$DISP_REAL[pts_data$DISP_REAL<0]=NA
+  ##remove vectors with low correlation strength
+  #pts_data$DISP_REAL[pts_data$STRENGTH<minstrength]=NA
+  ##remove upslope vectors
+  pts_data$DISP_REAL[pts_data$SLOPE>0]=NA
+  ##remove vectors with positive zdisp (should be resolved by previous step)
+  pts_data$DISP_REAL[pts_data$ZDISP>0]=NA
+  ##remove vectors with high xerr
+  pts_data$DISP_REAL[pts_data$XERR>maxerror]=NA
+  ##remove vectors with high xerr
+  pts_data$DISP_REAL[pts_data$YERR>maxerror]=NA
+
+  
+  
+  ##remove NAs
+  pts_data=pts_data[!is.na(pts_data$DISP_REAL),]
+  
+  ##compute mean velocity
+  pts_data["velocity"]=pts_data$DISP_REAL/period
+  
+  if (mode=="vel"){
+    vel_rast=raster::rasterize(pts_data[,c("x","y")],template,pts_data$velocity,fun=fun)
+    return(vel_rast)
+  }else if(mode=="disp"){
+    disp_rast=raster::rasterize(pts_data[,c("x","y")],template,pts_data$DISP_REAL,fun=fun)
+    return(disp_rast)
+  }else{
+    print("Select valid mode.")
+  }
+}
+
+
+
+##filter and scale vectors
+scaled_pts=function(pts,scaling=1,maxdisp=35,minstrength=5,maxerror=10,period){
+  pts_data=pts@data
+  pts_data["x"]=coordinates(pts)[,1]
+  pts_data["y"]=coordinates(pts)[,2]
+  
+  ##filtering options
+  pts_data$DISP_REAL[pts_data$DISP_REAL>maxdisp]=NA
+  ##remove ptsors in reverse direction
+  pts_data$DISP_REAL[pts_data$DISP_REAL<0]=NA
+  ##remove ptsors with low correlation strength
+  #pts_data$DISP_REAL[pts_data$STRENGTH<minstrength]=NA
+  ##remove upslope ptsors
+  pts_data$DISP_REAL[pts_data$SLOPE>0]=NA
+  ##remove ptsors with positive zdisp (should be resolved by previous step)
+  pts_data$DISP_REAL[pts_data$ZDISP>0]=NA
+  ##remove ptsors with high xerr
+  pts_data$DISP_REAL[pts_data$XERR>maxerror]=NA
+  ##remove ptsors with high xerr
+  pts_data$DISP_REAL[pts_data$YERR>maxerror]=NA
+  
+  ##remove NAs
+  pts_data=pts_data[!is.na(pts_data$DISP_REAL),]
+  
+  ##calculate mean velocity 
+  pts_data["velocity"]=pts_data$DISP_REAL/period
+  
+  #3D
+  pts_data["x2"]=pts_data$x+pts_data$vel*sin((pts_data$ASPECT)*pi/180)*scaling
+  pts_data["y2"]=pts_data$y+pts_data$vel*cos((pts_data$ASPECT)*pi/180)*scaling
+  
+  ##classify and colorize
+  pts_data["vel_class"]=cut(pts_data$velocity,colvel$breaks,labels=F)
+  pts_data.col=merge(pts_data,colvel,by.x="vel_class",by.y="classes")
+  
+  ##create SpatialLines
+  pts_data.col["ID"]=1:nrow(pts_data.col)
+  row.names(pts_data.col)=pts_data.col$ID
+  linien=list()
+  i=10
+  for (i in pts_data.col$ID){
+    l=Line(data.frame(x=c(pts_data.col$x[i],pts_data.col$x2[i]),y=c(pts_data.col$y[i],pts_data.col$y2[i])))
+    li=Lines(l,ID=i)
+    linien[[i]]=li
+  }
+  sl=SpatialLines(linien)
+
+  ##SpatialLines to SpatialLinesDataFrame
+  vect=SpatialLinesDataFrame(sl,data=pts_data.col)
+  vect@proj4string=CRS(proj)
+  #crs(vect)=st_crs(epsg)
+  
+  return(vect)
+}
+
+
+
+```
+
+
+## Displacement vectors
+Colorized by velocity
+
+```{r vector, echo=FALSE, warning=FALSE, warning=F}
+velmax=10#m/yr
+nclasses=10
+pal=function(n){colorRampPalette(c("blue","green","yellow","orange","red"))(n)}
+pal2=function(n){colorRampPalette(c("white","black"))(n)}
+pal3=function(n){colorRampPalette(c("red","white","green"))(n)}
+pal4=function(n){colorRampPalette(c("red","white","blue"))(n)}
+
+colvel=data.frame(classes=1:nclasses,
+                  breaks=c(0,0.25,0.5,1,2,4,6,8,10,Inf),
+                  col=sprintf("%s50",pal(nclasses)),
+                  stringsAsFactors=F)
+
+
+par(pty="s",mfrow=c(4,4),mar=c(2,2,1,1))
+lw=1
+xmin=51000
+xmax=52250
+ymin=188000
+ymax=189250
+
+
+##read stacks
+dsmstack=brick(paste(rasterdir,"HRG_DSM_stack.tif",sep="\\"))
+hsstack=brick(paste(rasterdir,"HRG_HS_stack.tif",sep="\\"))
+ddsmstack=brick(paste(rasterdir,"HRG_DDSM_stack.tif",sep="\\"))
+
+
+
+################################################################################################
+##Period 1953 - 1971
+hs1="1953_HS.sdat"
+dsm1="1953_DSM.sdat"
+hs2="1971_HS.sdat"
+dsm2="1971_DSM.sdat"
+
+##first write single rasters (sorry...)
+writeRaster(dsmstack[[1]],paste(rasterdir,dsm1,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(dsmstack[[2]],paste(rasterdir,dsm2,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[1]],paste(rasterdir,hs1,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[2]],paste(rasterdir,hs2,sep="\\"),format="SAGA",overwrite=T)
+
+if (reprocess==T) get_imcorr(rasterdir,vectordir,hs1,hs2,dsm1,dsm2)
+
+##read data
+vec2=readOGR(vectordir,sprintf("%s_vect",substr(hs2,start=1,stop=(nchar(hs2)-5))),verbose=F)
+ras2=raster(paste(rasterdir,hs2,sep="\\"))
+
+##process data
+vec2@data["id_sort"]=1:nrow(vec2@data)
+period2=as.numeric(difftime(as.POSIXct("1971-08-18"),as.POSIXct("1953-08-31")))/365
+vec2@data["rel_vel"]=vec2@data$DISP_REAL/period2
+vec2@data["vel_class"]=cut(vec2@data$rel_vel,colvel$breaks,labels=F)
+
+vec2.col=merge(vec2@data,colvel,by.x="vel_class",by.y="classes")
+vec2.col=vec2.col[order(vec2.col$id_sort),]
+vec2@data=vec2.col
+
+plot(ras2,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="1953 - 1971")
+plot(vec2,col=vec2@data$col,lwd=lw,add=T)
+
+
+
+################################################################################################
+##Period 1971 - 1977
+hs3="1977_HS.sdat"
+dsm3="1977_DSM.sdat"
+
+##first write single rasters (sorry...)
+writeRaster(dsmstack[[3]],paste(rasterdir,dsm3,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[3]],paste(rasterdir,hs3,sep="\\"),format="SAGA",overwrite=T)
+
+if (reprocess==T) get_imcorr(rasterdir,vectordir,hs2,hs3,dsm2,dsm3)
+
+##read data
+vec3=readOGR(vectordir,sprintf("%s_vect",substr(hs3,start=1,stop=(nchar(hs3)-5))),verbose=F)
+ras3=raster(paste(rasterdir,hs3,sep="\\"))
+
+##process data
+vec3@data["id_sort"]=1:nrow(vec3@data)
+period3=as.numeric(difftime(as.POSIXct("1977-09-07"),as.POSIXct("1971-08-18")))/365
+vec3@data["rel_vel"]=vec3@data$DISP_REAL/period3
+vec3@data["vel_class"]=cut(vec3@data$rel_vel,colvel$breaks,labels=F)
+
+vec3.col=merge(vec3@data,colvel,by.x="vel_class",by.y="classes")
+vec3.col=vec3.col[order(vec3.col$id_sort),]
+vec3@data=vec3.col
+
+plot(ras3,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="1971 - 1977")
+plot(vec3,col=vec3@data$col,lwd=lw,add=T)
+
+
+
+################################################################################################
+##Period 1977 - 1990
+hs4="1990_HS.sdat"
+dsm4="1990_DSM.sdat"
+
+##first write single rasters (sorry...)
+writeRaster(dsmstack[[4]],paste(rasterdir,dsm4,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[4]],paste(rasterdir,hs4,sep="\\"),format="SAGA",overwrite=T)
+
+if (reprocess==T) get_imcorr(rasterdir,vectordir,hs3,hs4,dsm3,dsm4)
+
+##read data)
+vec4=readOGR(vectordir,sprintf("%s_vect",substr(hs3,start=1,stop=(nchar(hs4)-5))),verbose=F)
+ras4=raster(paste(rasterdir,hs4,sep="\\"))
+
+##process data
+vec4@data["id_sort"]=1:nrow(vec4@data)
+period4=as.numeric(difftime(as.POSIXct("1990-10-10"),as.POSIXct("1977-09-07")))/365
+vec4@data["rel_vel"]=vec4@data$DISP_REAL/period4
+vec4@data["vel_class"]=cut(vec4@data$rel_vel,colvel$breaks,labels=F)
+
+vec4.col=merge(vec4@data,colvel,by.x="vel_class",by.y="classes")
+vec4.col=vec4.col[order(vec4.col$id_sort),]
+vec4@data=vec4.col
+
+plot(ras4,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="1977 - 1990")
+plot(vec4,col=vec4@data$col,lwd=lw,add=T)
+
+
+
+################################################################################################
+##Period 1990 - 1997
+hs5="1997_HS.sdat"
+dsm5="1997_DSM.sdat"
+
+##first write single rasters (sorry...)
+writeRaster(dsmstack[[5]],paste(rasterdir,dsm5,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[5]],paste(rasterdir,hs5,sep="\\"),format="SAGA",overwrite=T)
+
+if (reprocess==T) get_imcorr(rasterdir,vectordir,hs4,hs5,dsm4,dsm5)
+
+##read data)
+vec5=readOGR(vectordir,sprintf("%s_vect",substr(hs5,start=1,stop=(nchar(hs5)-5))),verbose=F)
+ras5=raster(paste(rasterdir,hs5,sep="\\"))
+
+vec5@data["id_sort"]=1:nrow(vec5@data)
+period5=as.numeric(difftime(as.POSIXct("1997-09-11"),as.POSIXct("1990-10-10")))/365
+vec5@data["rel_vel"]=vec5@data$DISP_REAL/period5
+vec5@data["vel_class"]=cut(vec5@data$rel_vel,colvel$breaks,labels=F)
+
+vec5.col=merge(vec5@data,colvel,by.x="vel_class",by.y="classes")
+vec5.col=vec5.col[order(vec5.col$id_sort),]
+vec5@data=vec5.col
+
+plot(ras5,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="1990 - 1997")
+plot(vec5,col=vec5@data$col,lwd=lw,add=T)
+
+
+
+################################################################################################
+##Period 1997 - 2006
+hs6="2006_HS.sdat"
+dsm6="2006_DSM.sdat"
+
+##first write single rasters (sorry...)
+writeRaster(dsmstack[[6]],paste(rasterdir,dsm6,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[6]],paste(rasterdir,hs6,sep="\\"),format="SAGA",overwrite=T)
+
+if (reprocess==T) get_imcorr(rasterdir,vectordir,hs5,hs6,dsm5,dsm6)
+
+##read data)
+vec6=readOGR(vectordir,sprintf("%s_vect",substr(hs6,start=1,stop=(nchar(hs6)-5))),verbose=F)
+ras6=raster(paste(rasterdir,hs6,sep="\\"))
+
+vec6@data["id_sort"]=1:nrow(vec6@data)
+period6=as.numeric(difftime(as.POSIXct("2006-08-23"),as.POSIXct("1997-09-11")))/365
+vec6@data["rel_vel"]=vec6@data$DISP_REAL/period6
+vec6@data["vel_class"]=cut(vec6@data$rel_vel,colvel$breaks,labels=F)
+
+vec6.col=merge(vec6@data,colvel,by.x="vel_class",by.y="classes")
+vec6.col=vec6.col[order(vec6.col$id_sort),]
+vec6@data=vec6.col
+
+plot(ras6,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="1997 - 2006")
+plot(vec6,col=vec6@data$col,lwd=lw,add=T)
+
+
+
+################################################################################################
+##Period 2006 - 2009
+hs7="2009_HS.sdat"
+dsm7="2009_DSM.sdat"
+
+##first write single rasters (sorry...)
+writeRaster(dsmstack[[7]],paste(rasterdir,dsm7,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[7]],paste(rasterdir,hs7,sep="\\"),format="SAGA",overwrite=T)
+
+if (reprocess==T) get_imcorr(rasterdir,vectordir,hs6,hs7,dsm6,dsm7)
+
+##read data)
+vec7=readOGR(vectordir,sprintf("%s_vect",substr(hs7,start=1,stop=(nchar(hs7)-5))),verbose=F)
+ras7=raster(paste(rasterdir,hs7,sep="\\"))
+
+vec7@data["id_sort"]=1:nrow(vec7@data)+5
+period7=as.numeric(difftime(as.POSIXct("2009-09-09"),as.POSIXct("2006-08-23")))/365
+vec7@data["rel_vel"]=vec7@data$DISP_REAL/period7
+vec7@data["vel_class"]=cut(vec7@data$rel_vel,colvel$breaks,labels=F)
+
+vec7.col=merge(vec7@data,colvel,by.x="vel_class",by.y="classes")
+vec7.col=vec7.col[order(vec7.col$id_sort),]
+vec7@data=vec7.col
+
+plot(ras7,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2006 - 2009")
+plot(vec7,col=vec7@data$col,lwd=lw,add=T)
+
+
+
+################################################################################################
+##Period 2009 - 2010
+hs8="2010_HS.sdat"
+dsm8="2010_DSM.sdat"
+
+##first write single rasters (sorry...)
+writeRaster(dsmstack[[8]],paste(rasterdir,dsm8,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[8]],paste(rasterdir,hs8,sep="\\"),format="SAGA",overwrite=T)
+
+if (reprocess==T) get_imcorr(rasterdir,vectordir,hs7,hs8,dsm7,dsm8)
+
+##read data)
+vec8=readOGR(vectordir,sprintf("%s_vect",substr(hs8,start=1,stop=(nchar(hs8)-5))),verbose=F)
+ras8=raster(paste(rasterdir,hs8,sep="\\"))
+
+vec8@data["id_sort"]=1:nrow(vec8@data)
+period8=as.numeric(difftime(as.POSIXct("2010-10-09"),as.POSIXct("2009-09-09")))/365
+vec8@data["rel_vel"]=vec8@data$DISP_REAL/period8
+vec8@data["vel_class"]=cut(vec8@data$rel_vel,colvel$breaks,labels=F)
+
+vec8.col=merge(vec8@data,colvel,by.x="vel_class",by.y="classes")
+vec8.col=vec8.col[order(vec8.col$id_sort),]
+vec8@data=vec8.col
+
+plot(ras8,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2009 - 2010")
+plot(vec8,col=vec8@data$col,lwd=lw,add=T)
+
+
+
+################################################################################################
+##Period 2010 - 2011
+hs9="2011_HS.sdat"
+dsm9="2011_DSM.sdat"
+
+##first write single rasters (sorry...)
+writeRaster(dsmstack[[9]],paste(rasterdir,dsm9,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[9]],paste(rasterdir,hs9,sep="\\"),format="SAGA",overwrite=T)
+
+if (reprocess==T) get_imcorr(rasterdir,vectordir,hs8,hs9,dsm8,dsm9)
+
+##read data)
+vec9=readOGR(vectordir,sprintf("%s_vect",substr(hs9,start=1,stop=(nchar(hs9)-5))),verbose=F)
+ras9=raster(paste(rasterdir,hs9,sep="\\"))
+
+vec9@data["id_sort"]=1:nrow(vec9@data)
+period9=as.numeric(difftime(as.POSIXct("2011-10-04"),as.POSIXct("2010-10-09")))/365
+vec9@data["rel_vel"]=vec9@data$DISP_REAL/period9
+vec9@data["vel_class"]=cut(vec9@data$rel_vel,colvel$breaks,labels=F)
+
+vec9.col=merge(vec9@data,colvel,by.x="vel_class",by.y="classes")
+vec9.col=vec9.col[order(vec9.col$id_sort),]
+vec9@data=vec9.col
+
+plot(ras9,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2010 - 2011")
+plot(vec9,col=vec9@data$col,lwd=lw,add=T)
+
+
+
+################################################################################################
+##Period 2011 - 2017
+hs10="2017_HS.sdat"
+dsm10="2017_DSM.sdat"
+
+##first write single rasters (sorry...)
+writeRaster(dsmstack[[10]],paste(rasterdir,dsm10,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[10]],paste(rasterdir,hs10,sep="\\"),format="SAGA",overwrite=T)
+
+if (reprocess==T) get_imcorr(rasterdir,vectordir,hs9,hs10,dsm9,dsm10)
+
+##read data)
+vec10=readOGR(vectordir,sprintf("%s_vect",substr(hs10,start=1,stop=(nchar(hs10)-5))),verbose=F)
+ras10=raster(paste(rasterdir,hs10,sep="\\"))
+
+vec10@data["id_sort"]=1:nrow(vec10@data)
+period10=as.numeric(difftime(as.POSIXct("2017-09-15"),as.POSIXct("2011-10-04")))/365
+vec10@data["rel_vel"]=vec10@data$DISP_REAL/period10
+vec10@data["vel_class"]=cut(vec10@data$rel_vel,colvel$breaks,labels=F)
+
+vec10.col=merge(vec10@data,colvel,by.x="vel_class",by.y="classes")
+vec10.col=vec10.col[order(vec10.col$id_sort),]
+vec10@data=vec10.col
+
+plot(ras10,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2011 - 2017")
+plot(vec10,col=vec10@data$col,lwd=lw,add=T)
+
+
+
+################################################################################################
+##Period 2017 - 2018
+hs11="2018_HS.sdat"
+dsm11="2018_DSM.sdat"
+
+##first write single rasters (sorry...)
+writeRaster(dsmstack[[11]],paste(rasterdir,dsm11,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[11]],paste(rasterdir,hs11,sep="\\"),format="SAGA",overwrite=T)
+
+if (reprocess==T) get_imcorr(rasterdir,vectordir,hs10,hs11,dsm10,dsm11)
+
+##read data)
+vec11=readOGR(vectordir,sprintf("%s_vect",substr(hs11,start=1,stop=(nchar(hs11)-5))),verbose=F)
+ras11=raster(paste(rasterdir,hs11,sep="\\"))
+
+vec11@data["id_sort"]=1:nrow(vec11@data)
+period11=as.numeric(difftime(as.POSIXct("2018-07-30"),as.POSIXct("2017-09-15")))/365
+vec11@data["rel_vel"]=vec11@data$DISP_REAL/period11
+vec11@data["vel_class"]=cut(vec11@data$rel_vel,colvel$breaks,labels=F)
+
+vec11.col=merge(vec11@data,colvel,by.x="vel_class",by.y="classes")
+vec11.col=vec11.col[order(vec11.col$id_sort),]
+vec11@data=vec11.col
+
+plot(ras11,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2017 - 2018")
+plot(vec11,col=vec11@data$col,lwd=lw,add=T)
+
+
+
+################################################################################################
+##Period 2018 - 2019
+hs12="2019_HS.sdat"
+dsm12="2019_DSM.sdat"
+
+##first write single rasters (sorry...)
+writeRaster(dsmstack[[12]],paste(rasterdir,dsm12,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[12]],paste(rasterdir,hs12,sep="\\"),format="SAGA",overwrite=T)
+
+if (reprocess==T) get_imcorr(rasterdir,vectordir,hs11,hs12,dsm11,dsm12)
+
+##read data)
+vec12=readOGR(vectordir,sprintf("%s_vect",substr(hs12,start=1,stop=(nchar(hs12)-5))),verbose=F)
+ras12=raster(paste(rasterdir,hs12,sep="\\"))
+
+vec12@data["id_sort"]=1:nrow(vec12@data)
+period12=as.numeric(difftime(as.POSIXct("2019-08-30"),as.POSIXct("2018-07-30")))/365
+vec12@data["rel_vel"]=vec12@data$DISP_REAL/period12
+vec12@data["vel_class"]=cut(vec12@data$rel_vel,colvel$breaks,labels=F)
+
+vec12.col=merge(vec12@data,colvel,by.x="vel_class",by.y="classes")
+vec12.col=vec12.col[order(vec12.col$id_sort),]
+vec12@data=vec12.col
+
+plot(ras12,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2018 - 2019")
+plot(vec12,col=vec12@data$col,lwd=lw,add=T)
+
+
+
+################################################################################################
+##Period 2019 - 2020
+hs13="2020_HS.sdat"
+dsm13="2020_DSM.sdat"
+
+##first write single rasters (sorry...)
+writeRaster(dsmstack[[13]],paste(rasterdir,dsm13,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[13]],paste(rasterdir,hs13,sep="\\"),format="SAGA",overwrite=T)
+
+if (reprocess==T) get_imcorr(rasterdir,vectordir,hs12,hs13,dsm12,dsm13)
+
+##read data)
+vec13=readOGR(vectordir,sprintf("%s_vect",substr(hs13,start=1,stop=(nchar(hs13)-5))),verbose=F)
+ras13=raster(paste(rasterdir,hs13,sep="\\"))
+
+vec13@data["id_sort"]=1:nrow(vec13@data)
+period13=as.numeric(difftime(as.POSIXct("2020-09-18"),as.POSIXct("2019-08-30")))/365
+vec13@data["rel_vel"]=vec13@data$DISP_REAL/period13
+vec13@data["vel_class"]=cut(vec13@data$rel_vel,colvel$breaks,labels=F)
+
+vec13.col=merge(vec13@data,colvel,by.x="vel_class",by.y="classes")
+vec13.col=vec13.col[order(vec13.col$id_sort),]
+vec13@data=vec13.col
+
+plot(ras13,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2019 - 2020")
+plot(vec13,col=vec13@data$col,lwd=lw,add=T)
+
+
+################################################################################################
+##Period 2020 - 2021
+hs14="2021_HS.sdat"
+dsm14="2021_DSM.sdat"
+
+##first write single rasters (sorry...)
+writeRaster(dsmstack[[14]],paste(rasterdir,dsm14,sep="\\"),format="SAGA",overwrite=T)
+writeRaster(hsstack[[14]],paste(rasterdir,hs14,sep="\\"),format="SAGA",overwrite=T)
+
+if (reprocess==T) get_imcorr(rasterdir,vectordir,hs13,hs14,dsm13,dsm14)
+
+##read data)
+vec14=readOGR(vectordir,sprintf("%s_vect",substr(hs14,start=1,stop=(nchar(hs14)-5))),verbose=F)
+ras14=raster(paste(rasterdir,hs14,sep="\\"))
+
+vec14@data["id_sort"]=1:nrow(vec14@data)
+period14=as.numeric(difftime(as.POSIXct("2021-08-13"),as.POSIXct("2020-09-18")))/365
+vec14@data["rel_vel"]=vec14@data$DISP_REAL/period14
+vec14@data["vel_class"]=cut(vec14@data$rel_vel,colvel$breaks,labels=F)
+
+vec14.col=merge(vec14@data,colvel,by.x="vel_class",by.y="classes")
+vec14.col=vec14.col[order(vec14.col$id_sort),]
+vec14@data=vec14.col
+
+plot(ras14,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2020 - 2021")
+plot(vec14,col=vec14@data$col,lwd=lw,add=T)
+
+
+legend("bottomright",legen=colvel$breaks,col=colvel$col,lwd=2)
+
+
+##set dates and names and write as tif
+dates_all=as.POSIXct(c("1953-08-31","1971-08-18","1977-09-07","1990-10-10","1997-09-11","2006-08-23",
+        "2009-09-09","2010-10-09","2011-10-04","2017-09-15","2018-07-30","2019-08-30","2020-09-18","2021-08-13"))
+
+
+```
+
+
+## Velocity rasters
+
+```{r rastvel, echo=FALSE, warning=FALSE}
+
+##rasterize point info
+##override spatial resolution
+vect_spacing=20
+
+template=raster(nrow=round(nrow(ras2)/vect_spacing,0),
+                ncol=round(ncol(ras2)/vect_spacing,0))
+
+##set extent and crs
+extent(template)=extent(ras2)
+crs(template)=st_crs(epsg)
+
+
+par(mfrow=c(4,4),mar=c(2,2,1,1))
+##for plotting only:
+maxvel=15 ##m/a
+
+pts2=readOGR(vectordir,sprintf("%s_pts",substr(hs2,start=1,stop=(nchar(hs2)-5))),verbose=F)
+vel_rast2=rast_vel(pts2,template,period=period2)
+##cut off maximum for plotting
+vel_rast2p=vel_rast2
+vel_rast2p[vel_rast2p>maxvel]=maxvel
+plot(vel_rast2p,zlim=c(0,maxvel),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F)
+
+pts3=readOGR(vectordir,sprintf("%s_pts",substr(hs3,start=1,stop=(nchar(hs3)-5))),verbose=F)
+vel_rast3=rast_vel(pts3,template,period=period3)
+##cut off maximum for plotting
+vel_rast3p=vel_rast3
+vel_rast3p[vel_rast3p>maxvel]=maxvel
+plot(vel_rast3p,zlim=c(0,maxvel),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F)
+
+pts4=readOGR(vectordir,sprintf("%s_pts",substr(hs4,start=1,stop=(nchar(hs4)-5))),verbose=F)
+vel_rast4=rast_vel(pts4,template,period=period4)
+##cut off maximum for plotting
+vel_rast4p=vel_rast4
+vel_rast4p[vel_rast4p>maxvel]=maxvel
+plot(vel_rast4p,zlim=c(0,maxvel),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F)
+
+pts5=readOGR(vectordir,sprintf("%s_pts",substr(hs5,start=1,stop=(nchar(hs5)-5))),verbose=F)
+vel_rast5=rast_vel(pts5,template,period=period5)
+##cut off maximum for plotting
+vel_rast5p=vel_rast5
+vel_rast5p[vel_rast5p>maxvel]=maxvel
+plot(vel_rast5p,zlim=c(0,maxvel),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F)
+
+pts6=readOGR(vectordir,sprintf("%s_pts",substr(hs6,start=1,stop=(nchar(hs6)-5))),verbose=F)
+vel_rast6=rast_vel(pts6,template,period=period6)
+##cut off maximum for plotting
+vel_rast6p=vel_rast6
+vel_rast6p[vel_rast6p>maxvel]=maxvel
+plot(vel_rast6p,zlim=c(0,maxvel),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F)
+
+pts7=readOGR(vectordir,sprintf("%s_pts",substr(hs7,start=1,stop=(nchar(hs7)-5))),verbose=F)
+vel_rast7=rast_vel(pts7,template,period=period7)
+##cut off maximum for plotting
+vel_rast7p=vel_rast7
+vel_rast7p[vel_rast7p>maxvel]=maxvel
+plot(vel_rast7p,zlim=c(0,maxvel),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F)
+
+pts8=readOGR(vectordir,sprintf("%s_pts",substr(hs8,start=1,stop=(nchar(hs8)-5))),verbose=F)
+vel_rast8=rast_vel(pts8,template,period=period8)
+##cut off maximum for plotting
+vel_rast8p=vel_rast8
+vel_rast8p[vel_rast8p>maxvel]=maxvel
+plot(vel_rast8p,zlim=c(0,maxvel),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F)
+
+pts9=readOGR(vectordir,sprintf("%s_pts",substr(hs9,start=1,stop=(nchar(hs9)-5))),verbose=F)
+vel_rast9=rast_vel(pts9,template,period=period9)
+##cut off maximum for plotting
+vel_rast9p=vel_rast9
+vel_rast9p[vel_rast9p>maxvel]=maxvel
+plot(vel_rast9p,zlim=c(0,maxvel),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F)
+
+pts10=readOGR(vectordir,sprintf("%s_pts",substr(hs10,start=1,stop=(nchar(hs10)-5))),verbose=F)
+vel_rast10=rast_vel(pts10,template,period=period10)
+##cut off maximum for plotting
+vel_rast10p=vel_rast10
+vel_rast10p[vel_rast10p>maxvel]=maxvel
+plot(vel_rast10p,zlim=c(0,maxvel),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F)
+
+pts11=readOGR(vectordir,sprintf("%s_pts",substr(hs11,start=1,stop=(nchar(hs11)-5))),verbose=F)
+vel_rast11=rast_vel(pts11,template,period=period11)
+##cut off maximum for plotting
+vel_rast11p=vel_rast11
+vel_rast11p[vel_rast11p>maxvel]=maxvel
+plot(vel_rast11p,zlim=c(0,maxvel),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F)
+
+pts12=readOGR(vectordir,sprintf("%s_pts",substr(hs12,start=1,stop=(nchar(hs12)-5))),verbose=F)
+vel_rast12=rast_vel(pts12,template,period=period12)
+##cut off maximum for plotting
+vel_rast12p=vel_rast12
+vel_rast12p[vel_rast12p>maxvel]=maxvel
+plot(vel_rast12p,zlim=c(0,maxvel),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F)
+
+pts13=readOGR(vectordir,sprintf("%s_pts",substr(hs13,start=1,stop=(nchar(hs13)-5))),verbose=F)
+vel_rast13=rast_vel(pts13,template,period=period13)
+##cut off maximum for plotting
+vel_rast13p=vel_rast13
+vel_rast13p[vel_rast13p>maxvel]=maxvel
+plot(vel_rast13p,zlim=c(0,maxvel),xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+
+pts14=readOGR(vectordir,sprintf("%s_pts",substr(hs14,start=1,stop=(nchar(hs14)-5))),verbose=F)
+vel_rast14=rast_vel(pts14,template,period=period14)
+##cut off maximum for plotting
+vel_rast14p=vel_rast14
+vel_rast14p[vel_rast14p>maxvel]=maxvel
+plot(vel_rast14p,zlim=c(0,maxvel),xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+
+
+
+##velocity stack
+dates=as.POSIXct(c("1953-08-31","1971-08-18","1977-09-07","1990-10-10","1997-09-11","2006-08-23",
+        "2009-09-09","2010-10-09","2011-10-04","2017-09-15","2018-07-30","2019-08-30","2020-09-18"))#,"2021-08-13"
+
+velstack=stack(vel_rast2,vel_rast3,vel_rast4,vel_rast5,vel_rast6,
+               vel_rast7,vel_rast8,vel_rast9,vel_rast10,vel_rast11,
+               vel_rast12,vel_rast13,vel_rast14)
+
+##set dates and names and write as tif
+velstack=setZ(velstack,dates)
+names(velstack)=dates
+crs(velstack)=st_crs(epsg)
+writeRaster(velstack,filename=paste(rasterdir,"velstack.tif",sep="\\"),overwrite=T)
+
+```
+
+
+## Filter displacement vectors and scale to velocity
+```{r scale, echo=FALSE, warning=FALSE}
+
+par(mfrow=c(4,4),mar=c(2,2,1,1))
+
+velvect2=scaled_pts(pts2,period=period2)
+#head(velvect2@data)
+plot(velvect2,col=velvect2@data$col,xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+writeOGR(dsn=velvecdir,obj=velvect2,"vel_vect_53-71",driver="ESRI Shapefile",overwrite=T)
+
+velvect3=scaled_pts(pts3,period=period3)
+plot(velvect3,col=velvect3@data$col,xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+writeOGR(dsn=velvecdir,obj=velvect3,"vel_vect_71-77",driver="ESRI Shapefile",overwrite=T)
+
+velvect4=scaled_pts(pts4,period=period4)
+plot(velvect4,col=velvect4@data$col,xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+writeOGR(dsn=velvecdir,obj=velvect4,"vel_vect_77-90",driver="ESRI Shapefile",overwrite=T)
+
+velvect5=scaled_pts(pts5,period=period5)
+plot(velvect5,col=velvect5@data$col,xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+writeOGR(dsn=velvecdir,obj=velvect5,"vel_vect_90-97",driver="ESRI Shapefile",overwrite=T)
+
+velvect6=scaled_pts(pts6,period=period6)
+plot(velvect6,col=velvect6@data$col,xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+writeOGR(dsn=velvecdir,obj=velvect6,"vel_vect_97-06",driver="ESRI Shapefile",overwrite=T)
+
+velvect7=scaled_pts(pts7,period=period7)
+plot(velvect7,col=velvect7@data$col,xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+writeOGR(dsn=velvecdir,obj=velvect7,"vel_vect_06-09",driver="ESRI Shapefile",overwrite=T)
+
+velvect8=scaled_pts(pts8,period=period8)
+plot(velvect8,col=velvect8@data$col,xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+writeOGR(dsn=velvecdir,obj=velvect8,"vel_vect_09-10",driver="ESRI Shapefile",overwrite=T)
+
+velvect9=scaled_pts(pts9,period=period9)
+plot(velvect9,col=velvect9@data$col,xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+writeOGR(dsn=velvecdir,obj=velvect9,"vel_vect_10-11",driver="ESRI Shapefile",overwrite=T)
+
+velvect10=scaled_pts(pts10,period=period10)
+plot(velvect10,col=velvect10@data$col,xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+writeOGR(dsn=velvecdir,obj=velvect10,"vel_vect_11-17",driver="ESRI Shapefile",overwrite=T)
+
+velvect11=scaled_pts(pts11,period=period11)
+plot(velvect11,col=velvect11@data$col,xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+writeOGR(dsn=velvecdir,obj=velvect11,"vel_vect_17-18",driver="ESRI Shapefile",overwrite=T)
+
+velvect12=scaled_pts(pts12,period=period12)
+plot(velvect12,col=velvect12@data$col,xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+writeOGR(dsn=velvecdir,obj=velvect12,"vel_vect_18-19",driver="ESRI Shapefile",overwrite=T)
+
+velvect13=scaled_pts(pts13,period=period13)
+plot(velvect13,col=velvect13@data$col,xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+writeOGR(dsn=velvecdir,obj=velvect13,"vel_vect_19-20",driver="ESRI Shapefile",overwrite=T)
+
+velvect14=scaled_pts(pts14,period=period14)
+plot(velvect14,col=velvect14@data$col,xlim=c(xmin,xmax),ylim=c(ymin,ymax))
+writeOGR(dsn=velvecdir,obj=velvect14,"vel_vect_20-21",driver="ESRI Shapefile",overwrite=T)
+
+
+```
+
+
+
+## Differential DSM
+
+```{r ddsm, echo=FALSE, warning=FALSE}
+
+##get_uncert
+get_uncert_ddsm=function(ddsm,stable,outlier_ts=0.5){
+  stable_rast=mask(ddsm,stable)
+  vals=getValues(stable_rast)
+  vals[(vals<=-outlier_ts)|(vals>=outlier_ts)]=NA
+  return(quant=quantile(vals,c(0.025,0.975),na.rm=T))
+}
+
+##stable areas
+stable=readOGR(paste(root,"stable\\stable_areas.shp",sep="\\"),verbose=F)
+
+##plot elevation change
+par(mfrow=c(4,4),mar=c(2,2,1,1))
+elevrange=1
+elev_outlier=10
+alpha=75
+plot(ras2,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="1953 - 1971")
+ddsm2=raster(paste(rasterdir,dsm2,sep="\\"))-raster(paste(rasterdir,dsm1,sep="\\"))
+##relative elevation change
+ddsm2=ddsm2/period2
+##mask outliers
+ddsm2[ddsm2<=(-elev_outlier)]=-elev_outlier
+ddsm2[ddsm2>elev_outlier]=elev_outlier
+##mask uncertainty
+unc_ddsm2=get_uncert_ddsm(ddsm2,stable)
+ddsm2_masked=ddsm2
+ddsm2_masked[(ddsm2_masked>=(unc_ddsm2[1]))&(ddsm2_masked<=(unc_ddsm2[2]))]=NA
+#writeRaster(ddsm2,paste(rasterdir,"ddsm2.tif"))
+plot(ddsm2_masked,col=sprintf("%s%i",pal3(100),alpha),zlim=c(-elevrange,elevrange),legend=F,add=T)
+
+plot(ras3,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="1971 - 1977")
+ddsm3=raster(paste(rasterdir,dsm3,sep="\\"))-raster(paste(rasterdir,dsm2,sep="\\"))
+##relative elevation change
+ddsm3=ddsm3/period3
+##mask outliers
+ddsm3[ddsm3<=(-elev_outlier)]=-elev_outlier
+ddsm3[ddsm3>elev_outlier]=elev_outlier
+##mask uncertainty
+unc_ddsm3=get_uncert_ddsm(ddsm3,stable)
+ddsm3_masked=ddsm3
+ddsm3_masked[(ddsm3_masked>=(unc_ddsm3[1]))&(ddsm3_masked<=(unc_ddsm3[2]))]=NA
+#writeRaster(ddsm3,paste(rasterdir,"ddsm3.tif"))
+plot(ddsm3_masked,col=sprintf("%s%i",pal3(100),alpha),zlim=c(-elevrange,elevrange),legend=F,add=T)
+
+plot(ras4,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="1977 - 1990")
+ddsm4=raster(paste(rasterdir,dsm4,sep="\\"))-raster(paste(rasterdir,dsm3,sep="\\"))
+##relative elevation change
+ddsm4=ddsm4/period4
+##mask outliers
+ddsm4[ddsm4<=(-elev_outlier)]=-elev_outlier
+ddsm4[ddsm4>elev_outlier]=elev_outlier
+##mask uncertainty
+unc_ddsm4=get_uncert_ddsm(ddsm4,stable)
+ddsm4_masked=ddsm4
+ddsm4_masked[(ddsm4_masked>=(unc_ddsm4[1]))&(ddsm4_masked<=(unc_ddsm4[2]))]=NA
+#writeRaster(ddsm4,paste(rasterdir,"ddsm4.tif"))
+plot(ddsm4_masked,col=sprintf("%s%i",pal3(100),alpha),zlim=c(-elevrange,elevrange),legend=F,add=T)
+
+plot(ras5,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="1990 - 1997")
+ddsm5=raster(paste(rasterdir,dsm5,sep="\\"))-raster(paste(rasterdir,dsm4,sep="\\"))
+##relative elevation change
+ddsm5=ddsm5/period5
+##mask outliers
+ddsm5[ddsm5<=(-elev_outlier)]=-elev_outlier
+ddsm5[ddsm5>elev_outlier]=elev_outlier
+##mask uncertainty
+unc_ddsm5=get_uncert_ddsm(ddsm5,stable)
+ddsm5_masked=ddsm5
+ddsm5_masked[(ddsm5_masked>=(unc_ddsm5[1]))&(ddsm5_masked<=(unc_ddsm5[2]))]=NA
+#writeRaster(ddsm5,paste(rasterdir,"ddsm5.tif"))
+plot(ddsm5_masked,col=sprintf("%s%i",pal3(100),alpha),zlim=c(-elevrange,elevrange),legend=F,add=T)
+
+plot(ras6,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="1997 - 2006")
+ddsm6=raster(paste(rasterdir,dsm6,sep="\\"))-raster(paste(rasterdir,dsm5,sep="\\"))
+##relative elevation change
+ddsm6=ddsm6/period6
+##mask outliers
+ddsm6[ddsm6<=(-elev_outlier)]=-elev_outlier
+ddsm6[ddsm6>elev_outlier]=elev_outlier
+##mask uncertainty
+unc_ddsm6=get_uncert_ddsm(ddsm6,stable)
+ddsm6_masked=ddsm6
+ddsm6_masked[(ddsm6_masked>=(unc_ddsm6[1]))&(ddsm6_masked<=(unc_ddsm6[2]))]=NA
+#writeRaster(ddsm6,paste(rasterdir,"ddsm6.tif"))
+plot(ddsm6_masked,col=sprintf("%s%i",pal3(100),alpha),zlim=c(-elevrange,elevrange),legend=F,add=T)
+
+plot(ras7,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2006 - 2009")
+ddsm7=raster(paste(rasterdir,dsm7,sep="\\"))-raster(paste(rasterdir,dsm6,sep="\\"))
+##relative elevation change
+ddsm7=ddsm7/period7
+##mask outliers
+ddsm7[ddsm7<=(-elev_outlier)]=-elev_outlier
+ddsm7[ddsm7>elev_outlier]=elev_outlier
+##mask uncertainty
+unc_ddsm7=get_uncert_ddsm(ddsm7,stable)
+ddsm7_masked=ddsm7
+ddsm7_masked[(ddsm7_masked>=(unc_ddsm7[1]))&(ddsm7_masked<=(unc_ddsm7[2]))]=NA
+#writeRaster(ddsm7,paste(rasterdir,"ddsm7.tif"))
+plot(ddsm7_masked,col=sprintf("%s%i",pal3(100),alpha),zlim=c(-elevrange,elevrange),legend=F,add=T)
+
+plot(ras8,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2009 - 2010")
+ddsm8=raster(paste(rasterdir,dsm8,sep="\\"))-raster(paste(rasterdir,dsm7,sep="\\"))
+##relative elevation change
+ddsm8=ddsm8/period8
+##mask outliers
+ddsm8[ddsm8<=(-elev_outlier)]=-elev_outlier
+ddsm8[ddsm8>elev_outlier]=elev_outlier
+##mask uncertainty
+unc_ddsm8=get_uncert_ddsm(ddsm8,stable)
+ddsm8_masked=ddsm8
+ddsm8_masked[(ddsm8_masked>=(unc_ddsm8[1]))&(ddsm8_masked<=(unc_ddsm8[2]))]=NA
+#writeRaster(ddsm8,paste(rasterdir,"ddsm8.tif"))
+plot(ddsm8_masked,col=sprintf("%s%i",pal3(100),alpha),zlim=c(-elevrange,elevrange),legend=F,add=T)
+
+plot(ras9,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2010 - 2011")
+ddsm9=raster(paste(rasterdir,dsm9,sep="\\"))-raster(paste(rasterdir,dsm8,sep="\\"))
+##relative elevation change
+ddsm9=ddsm9/period9
+##mask outliers
+ddsm9[ddsm9<=(-elev_outlier)]=-elev_outlier
+ddsm9[ddsm9>elev_outlier]=elev_outlier
+##mask uncertainty
+unc_ddsm9=get_uncert_ddsm(ddsm9,stable)
+ddsm9_masked=ddsm9
+ddsm9_masked[(ddsm9_masked>=(unc_ddsm9[1]))&(ddsm9_masked<=(unc_ddsm9[2]))]=NA
+#writeRaster(ddsm9,paste(rasterdir,"ddsm9.tif"))
+plot(ddsm9_masked,col=sprintf("%s%i",pal3(100),alpha),zlim=c(-elevrange,elevrange),legend=F,add=T)
+
+plot(ras10,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2011 - 2017")
+ddsm10=raster(paste(rasterdir,dsm10,sep="\\"))-raster(paste(rasterdir,dsm9,sep="\\"))
+##relative elevation change
+ddsm10=ddsm10/period10
+##mask outliers
+ddsm10[ddsm10<=(-elev_outlier)]=-elev_outlier
+ddsm10[ddsm10>elev_outlier]=elev_outlier
+##mask uncertainty
+unc_ddsm10=get_uncert_ddsm(ddsm10,stable)
+ddsm10_masked=ddsm10
+ddsm10_masked[(ddsm10_masked>=(unc_ddsm10[1]))&(ddsm10_masked<=(unc_ddsm10[2]))]=NA
+#writeRaster(ddsm10,paste(rasterdir,"ddsm10.tif"))
+plot(ddsm10_masked,col=sprintf("%s%i",pal3(100),alpha),zlim=c(-elevrange,elevrange),legend=F,add=T)
+
+plot(ras11,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2017 - 2018")
+ddsm11=raster(paste(rasterdir,dsm11,sep="\\"))-raster(paste(rasterdir,dsm10,sep="\\"))
+##relative elevation change
+ddsm11=ddsm11/period11
+##mask outliers
+ddsm11[ddsm11<=(-elev_outlier)]=-elev_outlier
+ddsm11[ddsm11>elev_outlier]=elev_outlier
+##mask uncertainty
+unc_ddsm11=get_uncert_ddsm(ddsm11,stable)
+ddsm11_masked=ddsm11
+ddsm11_masked[(ddsm11_masked>=(unc_ddsm11[1]))&(ddsm11_masked<=(unc_ddsm11[2]))]=NA
+#writeRaster(ddsm11,paste(rasterdir,"ddsm11.tif"))
+plot(ddsm11_masked,col=sprintf("%s%i",pal3(100),alpha),zlim=c(-elevrange,elevrange),legend=F,add=T)
+
+plot(ras12,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2018 - 2019")
+ddsm12=raster(paste(rasterdir,dsm12,sep="\\"))-raster(paste(rasterdir,dsm11,sep="\\"))
+##relative elevation change
+ddsm12=ddsm12/period12
+##mask outliers
+ddsm12[ddsm12<=(-elev_outlier)]=-elev_outlier
+ddsm12[ddsm12>elev_outlier]=elev_outlier
+##mask uncertainty
+unc_ddsm12=get_uncert_ddsm(ddsm12,stable)
+ddsm12_masked=ddsm12
+ddsm12_masked[(ddsm12_masked>=(unc_ddsm12[1]))&(ddsm12_masked<=(unc_ddsm12[2]))]=NA
+#writeRaster(ddsm12,paste(rasterdir,"ddsm12.tif"))
+plot(ddsm12_masked,col=sprintf("%s%i",pal3(100),alpha),zlim=c(-elevrange,elevrange),legend=F,add=T)
+
+plot(ras13,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2019 - 2020")
+ddsm13=raster(paste(rasterdir,dsm13,sep="\\"))-raster(paste(rasterdir,dsm12,sep="\\"))
+##relative elevation change
+ddsm13=ddsm13/period13
+##mask outliers
+ddsm13[ddsm13<=(-elev_outlier)]=-elev_outlier
+ddsm13[ddsm13>elev_outlier]=elev_outlier
+##mask uncertainty
+unc_ddsm13=get_uncert_ddsm(ddsm13,stable)
+ddsm13_masked=ddsm13
+ddsm13_masked[(ddsm13_masked>=(unc_ddsm13[1]))&(ddsm13_masked<=(unc_ddsm13[2]))]=NA
+#writeRaster(ddsm13,paste(rasterdir,"ddsm13.tif"))
+plot(ddsm13_masked,col=sprintf("%s%i",pal3(100),alpha),zlim=c(-elevrange,elevrange),add=T)
+
+plot(ras14,col=pal2(2^8),xlim=c(xmin,xmax),ylim=c(ymin,ymax),legend=F,main="2020 - 2021")
+ddsm14=raster(paste(rasterdir,dsm14,sep="\\"))-raster(paste(rasterdir,dsm13,sep="\\"))
+##relative elevation change
+ddsm14=ddsm14/period14
+##mask outliers
+ddsm14[ddsm14<=(-elev_outlier)]=-elev_outlier
+ddsm14[ddsm14>elev_outlier]=elev_outlier
+##mask uncertainty
+unc_ddsm14=get_uncert_ddsm(ddsm14,stable)
+ddsm14_masked=ddsm14
+ddsm14_masked[(ddsm14_masked>=(unc_ddsm14[1]))&(ddsm14_masked<=(unc_ddsm4[2]))]=NA
+#writeRaster(ddsm14,paste(rasterdir,"ddsm14.tif"))
+plot(ddsm14_masked,col=sprintf("%s%i",pal3(100),alpha),zlim=c(-elevrange,elevrange),add=T)
+
+
+##export ddsm stack
+ddsmstack=stack(ddsm2,ddsm3,ddsm4,ddsm5,ddsm6,ddsm7,ddsm8,ddsm9,ddsm10,ddsm11,ddsm12,ddsm13,ddsm14)
+##set dates and names and write as tif
+ddsmstack=setZ(ddsmstack,dates)
+names(ddsmstack)=dates
+#crs(ddsmstack)=CRS(proj)
+crs(ddsmstack)=st_crs(epsg)
+writeRaster(ddsmstack,filename=paste(rasterdir,"ddsmstack.tif",sep="\\"),overwrite=T)
+
+
+##export masked ddsm stack
+ddsmstack_masked=stack(ddsm2_masked,ddsm3_masked,ddsm4_masked,ddsm5_masked,ddsm6_masked,ddsm7_masked,ddsm8_masked,ddsm9_masked,ddsm10_masked,ddsm11_masked,ddsm12_masked,ddsm13_masked,ddsm14_masked)
+##set dates and names and write as tif
+ddsmstack_masked=setZ(ddsmstack_masked,dates)
+names(ddsmstack_masked)=dates
+#crs(ddsmstack_masked)=CRS(proj)
+crs(ddsmstack_masked)=st_crs(epsg)
+writeRaster(ddsmstack_masked,filename=paste(rasterdir,"ddsmstack_masked.tif",sep="\\"),overwrite=T)
+
+```
+
+
+
+## Aggregation at stone lines
+
+```{r aggregation, echo=FALSE, warning=FALSE}
+
+#read aggregation areas
+p0=readOGR(paste(aggdir,"p0.shp",sep="\\"),verbose=T)
+p1=readOGR(paste(aggdir,"p1.shp",sep="\\"),verbose=T)
+p2=readOGR(paste(aggdir,"p2.shp",sep="\\"),verbose=T)
+p3=readOGR(paste(aggdir,"p3.shp",sep="\\"),verbose=T)
+
+
+##extract velocities within stone lines
+vels_p0=data.frame(extract(velstack,p0))
+velmedian_p0=apply(vels_p0,2,FUN="median",na.rm=T)
+
+vels_p1=data.frame(extract(velstack,p1))
+velmedian_p1=apply(vels_p1,2,FUN="median",na.rm=T)
+
+vels_p2=data.frame(extract(velstack,p2))
+#remove outliers
+vels_p2[vels_p2>quantile(unlist(vels_p2),0.95,na.rm=T)]=NA
+velmedian_p2=apply(vels_p2,2,FUN="median",na.rm=T)
+
+vels_p3=data.frame(extract(velstack,p3))
+#remove outliers
+vels_p3[vels_p3>quantile(unlist(vels_p3),0.95,na.rm=T)]=NA
+velmedian_p3=apply(vels_p3,2,FUN="median",na.rm=T)
+
+
+##plot
+par(pty="m",mfrow=c(1,1),mar=c(4,4,3,3),xaxs="i",yaxs="i")
+plot(dates,velmedian_p0,type="s",axes=F,xlab="",ylab="",col="blue",lwd=2,ylim=c(0,14))
+xticks=seq(as.POSIXct("1950-01-01"),as.POSIXct("2025-01-01"),by="10 years")
+axis(side=1,at=xticks,labels=format(xticks,format="%Y"))
+axis(side=2,las=1)
+mtext(side=2,"Median 2.5D velocity [m/yr]",line=2.5)
+
+abline(h=seq(0,14,2),lty=2,col="gray70")
+
+lines(dates,velmedian_p1,type="s",col="red",lwd=2)
+lines(dates,velmedian_p2,type="s",col="dark green",lwd=2)
+lines(dates,velmedian_p3,type="s",col="gray70",lwd=2)
+
+legend("topleft",legend=c("P0","P1","P2","P3"),col=c("blue","red","dark green","gray70"),lwd=2)
+
+vels=data.frame(date=dates,
+                vel_p0=velmedian_p0,
+                vel_p1=velmedian_p1,
+                vel_p2=velmedian_p2,
+                vel_p3=velmedian_p3)
+
+
+```
+

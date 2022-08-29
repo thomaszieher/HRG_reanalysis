@@ -1,0 +1,423 @@
+---
+title: "Uncertainty assessment"
+author: "Thomas"
+date: "9 8 2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+########################################################################
+##TODOs before running                                                ##
+## - set root folder                                                  ##
+## - put stable areas and velocity_vectors in respective folders      ##
+##                                                                    ##
+##set root folder                                                     ##
+root=""                                                               ##
+setwd(root)                                                           ##
+##                                                                    ##
+##put stable areas and velocity_vectors in respective folders         ##
+stabledir=paste(root,"stable",sep="\\")                               ##
+velvecdir=paste(root,"velocity_vectors",sep="\\")                     ##
+########################################################################
+
+
+##put stable areas and velocity_vectors in respective folders
+stabledir=paste(root,"stable",sep="\\")
+velvecdir=paste(root,"velocity_vectors",sep="\\")
+
+
+library(rgdal)
+library(raster)
+library(sf)
+library(circular)
+```
+
+
+
+```{r assessment, warning=F, echo=FALSE}
+
+inc=0.25
+classes=seq(0,5,inc)
+nclasses=length(classes)-1
+stable=readOGR(stabledir,"validation_areas")
+
+##get all vector files
+vector_files=list.files(velvecdir,pattern=".shp",all.files = F)
+
+periods=data.frame(years=c("53-71","71-77","77-90","90-97","97-06","06-09","09-10","10-11","11-17","17-18","18-19","19-20","20-21"),
+                   period=c(as.numeric(difftime(as.POSIXct("1971-08-18"),as.POSIXct("1953-08-31")))/365,
+as.numeric(difftime(as.POSIXct("1977-09-07"),as.POSIXct("1971-08-18")))/365,
+as.numeric(difftime(as.POSIXct("1990-10-10"),as.POSIXct("1977-09-07")))/365,
+as.numeric(difftime(as.POSIXct("1997-09-11"),as.POSIXct("1990-10-10")))/365,
+as.numeric(difftime(as.POSIXct("2006-08-23"),as.POSIXct("1997-09-11")))/365,
+as.numeric(difftime(as.POSIXct("2009-09-09"),as.POSIXct("2006-08-23")))/365,
+as.numeric(difftime(as.POSIXct("2010-10-09"),as.POSIXct("2009-09-09")))/365,
+as.numeric(difftime(as.POSIXct("2011-10-04"),as.POSIXct("2010-10-09")))/365,
+as.numeric(difftime(as.POSIXct("2017-09-15"),as.POSIXct("2011-10-04")))/365,
+as.numeric(difftime(as.POSIXct("2018-07-30"),as.POSIXct("2017-09-15")))/365,
+as.numeric(difftime(as.POSIXct("2019-08-30"),as.POSIXct("2018-07-30")))/365,
+as.numeric(difftime(as.POSIXct("2020-09-18"),as.POSIXct("2019-08-30")))/365,
+as.numeric(difftime(as.POSIXct("2021-08-13"),as.POSIXct("2020-09-18")))/365))
+periods["shapefile"]=sprintf("vel_vect_%s.shp",periods$years)
+
+
+stats=data.frame()
+i=5
+for (i in 1:length(vector_files)){
+  ##import data
+  vectors=vector_files[i]
+  print(vectors)
+  vects=readOGR(velvecdir,substr(vectors,start=1,stop=(nchar(vectors)-4)))
+  
+  ##select vectors in stable areas
+  stable_vects=intersect(vects,stable)
+
+  ##omit outliers
+  stable_vects=stable_vects[stable_vects@data$velocity<5,]
+  
+  ##plot aspect rose
+  ##classes adapted to the data
+  # nclasses=5
+  # max_disp=max(stable_vects@data$velocity)
+  # #max_disp=max(stable_vects@data$DISP)
+  # inc=max_disp/nclasses
+  # classes=seq(0,max_disp,by=inc)
+  
+  
+  classesLegend=sprintf("%0.2f - %0.2f",classes[1:(length(classes)-1)],classes[2:(length(classes))])
+  pal_gnblrd=function(n){colorRampPalette(c("green","blue","red"))(n)}
+  cols=pal_gnblrd(nclasses)
+  
+  par(pty="s",mfrow=c(1,1))
+  angleIncrement=20#30
+  windData=data.frame(dir=circular(stable_vects@data$ASPECT,
+                                   units="degrees",
+                                   rotation="clock",
+                                   zero=pi/2),
+                      mag=stable_vects@data$velocity)
+                      #mag=stable_vects@data$DISP)
+  wr=windrose(x=windData$dir,y=windData$mag,
+              bins=360/angleIncrement,increment=inc,units="degrees",fill.col=cols,cir.ind=0.2,
+              main=vector_files[i],axes=F,ticks=F,label.freq=F,plot.mids=F,mids.size=1,shrink=1.25)
+  
+  ##text elements
+  lines(c(0,0),c(1,-1))
+  lines(c(1,-1),c(0,0))
+  text(0,1.1,"N")
+  text(1.1,0,"E")
+  text(0,-1.1,"S")
+  text(-1.1,0,"W")
+  
+  legend("bottomright",legend=classesLegend,col=cols,pch=15,cex=0.75)
+
+  
+  ##append stats
+  b=boxplot(stable_vects@data$velocity,plot=F)
+  boxplot_stats=data.frame(t(b$stats))
+  names(boxplot_stats)=c("wmin","bmin","median","bmax","wmax")
+  
+  ##mean
+  #uncdx=mean(stable_vects@data$XDISP)
+  #uncdy=mean(stable_vects@data$YDISP)
+  #uncdz=mean(stable_vects@data$ZDISP)
+  
+  ##median
+  uncdx=median(stable_vects@data$XDISP)
+  uncdy=median(stable_vects@data$YDISP)
+  uncdz=median(stable_vects@data$ZDISP)
+  uncd2d=(uncdx^2+uncdy^2)^0.5
+  uncd3d=(uncdx^2+uncdy^2+uncdz^2)^0.5
+  
+  period=periods$period[periods$shapefile==vectors]
+  uncvx=uncdx/period
+  uncvy=uncdy/period
+  uncvz=uncdz/period
+  uncv2d=uncd2d/period
+  uncv3d=uncd3d/period
+  
+  bx=boxplot(stable_vects@data$XDISP,plot=F)
+  bx_stats=data.frame(t(bx$stats))
+  names(bx_stats)=c("wxmin","bxmin","xmedian","bxmax","wxmax")
+  
+  by=boxplot(stable_vects@data$YDISP,plot=F)
+  by_stats=data.frame(t(by$stats))
+  names(by_stats)=c("wymin","bymin","ymedian","bymax","wymax")
+  
+  bz=boxplot(stable_vects@data$ZDISP,plot=F)
+  bz_stats=data.frame(t(bz$stats))
+  names(bz_stats)=c("wzmin","bzmin","zmedian","bzmax","wzmax")
+  
+  
+  ##velocity  
+  vx=boxplot(stable_vects@data$XDISP/period,plot=F)
+  vx_stats=data.frame(t(vx$stats))
+  names(vx_stats)=c("wvxmin","bvxmin","vxmedian","bvxmax","wvxmax")
+  
+  vy=boxplot(stable_vects@data$YDISP/period,plot=F)
+  vy_stats=data.frame(t(vy$stats))
+  names(vy_stats)=c("wvymin","bvymin","vymedian","bvymax","wvymax")
+  
+  vz=boxplot(stable_vects@data$ZDISP/period,plot=F)
+  vz_stats=data.frame(t(vz$stats))
+  names(vz_stats)=c("wvzmin","bvzmin","vzmedian","bvzmax","wvzmax")
+  
+  newdata=data.frame(file=vectors,
+                     vel_mean=mean(stable_vects@data$velocity,na.rm=T),
+                     vel_median=median(stable_vects@data$velocity,na.rm=T),
+                     vel_sd=sd(stable_vects@data$velocity,na.rm=T),
+                     vel_q95=quantile(stable_vects@data$velocity,0.95),
+                     boxplot_stats,
+                     bx_stats,
+                     by_stats,
+                     bz_stats,
+                     vx_stats,
+                     vy_stats,
+                     vz_stats,
+                     n=b$n,
+                     uncdx=uncdx,
+                     uncdy=uncdy,
+                     uncdz=uncdz,
+                     uncd2d=uncd2d,
+                     uncd3d=uncd3d,
+                     uncvx=uncvx,
+                     uncvy=uncvy,
+                     uncvz=uncvz,
+                     uncv2d=uncv2d,
+                     uncv3d=uncv3d,
+                     period=period,
+                     velx_sd=sd(stable_vects@data$XDISP/period,na.rm=T),
+                     vely_sd=sd(stable_vects@data$YDISP/period,na.rm=T),
+                     velz_sd=sd(stable_vects@data$ZDISP/period,na.rm=T)
+                     )
+  
+  print(newdata)
+  stats=rbind(stats,newdata)
+  
+}
+
+orderlist=c(9,10,11,12,13,1,2,3,4,5,6,7,8)
+stats=stats[orderlist,]
+stats
+
+stats["period_text"]=substr(stats$file,start=10,stop=14)
+
+
+par(pty="m")
+plot(NA,NA,xlim=c(0,12),ylim=c(0,0.6),axes=F,xlab="",ylab="")
+axis(side=1,at=0:12,labels=stats$period_text)
+axis(side=2)
+i=0
+width=0.2
+width_b=0.3
+file=stats$file[1]
+for (file in unique(stats$file)){
+  b_sub=stats[stats$file==file,]
+  segments(x0=i,x1=i,y0=as.numeric(b_sub$wmin),y1=as.numeric(b_sub$wmax))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wmin),y1=as.numeric(b_sub$wmin))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wmax),y1=as.numeric(b_sub$wmax))
+  
+  ##uncertainty following Fleischer et al. 2021
+  uncert=as.numeric(b_sub$vel_mean)+2*as.numeric(b_sub$vel_sd)
+  print(uncert)
+  segments(x0=i-width,x1=i+width,y0=uncert,y1=uncert,col="red")
+  
+  polygon(x=c(i-width_b,i+width_b,i+width_b,i-width_b,i-width_b),
+          y=c(b_sub$bmin,b_sub$bmin,b_sub$bmax,b_sub$bmax,b_sub$bmin),col="white")
+  segments(x0=i-width_b,x1=i+width_b,y0=as.numeric(b_sub$median),y1=as.numeric(b_sub$median),lwd=2)
+  i=i+1
+}
+
+abline(h=median(stats$median))
+
+
+print(stats$vel_mean+2*stats$vel_sd)
+print(mean(stats$vel_mean+2*stats$vel_sd))
+
+
+
+
+##displacement
+##dx
+plot(NA,NA,xlim=c(0,12),ylim=c(-1,1),axes=F,xlab="",ylab="Displacement x-direction")
+axis(side=1,at=0:12,labels=stats$period_text)
+axis(side=2)
+abline(h=0)
+i=0
+width=0.2
+width_b=0.3
+file=stats$file[1]
+for (file in unique(stats$file)){
+  b_sub=stats[stats$file==file,]
+  segments(x0=i,x1=i,y0=as.numeric(b_sub$wxmin),y1=as.numeric(b_sub$wxmax))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wxmin),y1=as.numeric(b_sub$wxmin))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wxmax),y1=as.numeric(b_sub$wxmax))
+  
+  ##uncertainty following Fleischer et al. 2021
+  #uncert=as.numeric(b_sub$vel_mean)+2*as.numeric(b_sub$vel_sd)
+  #print(uncert)
+  #segments(x0=i-width,x1=i+width,y0=uncert,y1=uncert,col="red")
+  
+  polygon(x=c(i-width_b,i+width_b,i+width_b,i-width_b,i-width_b),
+          y=c(b_sub$bxmin,b_sub$bxmin,b_sub$bxmax,b_sub$bxmax,b_sub$bxmin),col="white")
+  segments(x0=i-width_b,x1=i+width_b,y0=as.numeric(b_sub$xmedian),y1=as.numeric(b_sub$xmedian),lwd=2)
+  i=i+1
+}
+
+
+
+##dy
+plot(NA,NA,xlim=c(0,12),ylim=c(-1,1),axes=F,xlab="",ylab="Displacement y-direction")
+axis(side=1,at=0:12,labels=stats$period_text)
+axis(side=2)
+abline(h=0)
+i=0
+width=0.2
+width_b=0.3
+file=stats$file[1]
+for (file in unique(stats$file)){
+  b_sub=stats[stats$file==file,]
+  segments(x0=i,x1=i,y0=as.numeric(b_sub$wymin),y1=as.numeric(b_sub$wymax))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wymin),y1=as.numeric(b_sub$wymin))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wymax),y1=as.numeric(b_sub$wymax))
+  
+  ##uncertainty following Fleischer et al. 2021
+  #uncert=as.numeric(b_sub$vel_mean)+2*as.numeric(b_sub$vel_sd)
+  #print(uncert)
+  #segments(x0=i-width,x1=i+width,y0=uncert,y1=uncert,col="red")
+  
+  polygon(x=c(i-width_b,i+width_b,i+width_b,i-width_b,i-width_b),
+          y=c(b_sub$bymin,b_sub$bymin,b_sub$bymax,b_sub$bymax,b_sub$bymin),col="white")
+  segments(x0=i-width_b,x1=i+width_b,y0=as.numeric(b_sub$ymedian),y1=as.numeric(b_sub$ymedian),lwd=2)
+  i=i+1
+}
+
+
+
+##dz
+plot(NA,NA,xlim=c(0,12),ylim=c(-1,1),axes=F,xlab="",ylab="Displacement z-direction")
+axis(side=1,at=0:12,labels=stats$period_text)
+axis(side=2)
+abline(h=0)
+i=0
+width=0.2
+width_b=0.3
+file=stats$file[1]
+for (file in unique(stats$file)){
+  b_sub=stats[stats$file==file,]
+  segments(x0=i,x1=i,y0=as.numeric(b_sub$wzmin),y1=as.numeric(b_sub$wzmax))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wzmin),y1=as.numeric(b_sub$wzmin))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wzmax),y1=as.numeric(b_sub$wzmax))
+  
+  ##uncertainty following Fleischer et al. 2021
+  #uncert=as.numeric(b_sub$vel_mean)+2*as.numeric(b_sub$vel_sd)
+  #print(uncert)
+  #segments(x0=i-width,x1=i+width,y0=uncert,y1=uncert,col="red")
+  
+  polygon(x=c(i-width_b,i+width_b,i+width_b,i-width_b,i-width_b),
+          y=c(b_sub$bzmin,b_sub$bzmin,b_sub$bzmax,b_sub$bzmax,b_sub$bzmin),col="white")
+  segments(x0=i-width_b,x1=i+width_b,y0=as.numeric(b_sub$zmedian),y1=as.numeric(b_sub$zmedian),lwd=2)
+  i=i+1
+}
+
+
+
+##velocity
+##vx
+plot(NA,NA,xlim=c(-0.5,12.5),ylim=c(-0.4,0.4),axes=F,xlab="",ylab="Uncertainty of velocity in east-west-direction",las=1)
+axis(side=1,at=0:12,labels=stats$period_text)
+axis(side=2,at=seq(-0.4,0.4,0.1),las=1)
+abline(h=0)
+i=0
+width=0.2
+width_b=0.3
+file=stats$file[1]
+for (file in unique(stats$file)){
+  b_sub=stats[stats$file==file,]
+  segments(x0=i,x1=i,y0=as.numeric(b_sub$wvxmin),y1=as.numeric(b_sub$wvxmax))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wvxmin),y1=as.numeric(b_sub$wvxmin))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wvxmax),y1=as.numeric(b_sub$wvxmax))
+  
+  ##uncertainty following Fleischer et al. 2021
+  #uncert=as.numeric(b_sub$vel_mean)+2*as.numeric(b_sub$vel_sd)
+  #print(uncert)
+  #segments(x0=i-width,x1=i+width,y0=uncert,y1=uncert,col="red")
+  
+  #segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$vxmedian)+as.numeric(b_sub$velx_sd),y1=as.numeric(b_sub$vxmedian)+as.numeric(b_sub$velx_sd),col="red")
+  #segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$vxmedian)-as.numeric(b_sub$velx_sd),y1=as.numeric(b_sub$vxmedian)-as.numeric(b_sub$velx_sd),col="red")
+  
+  polygon(x=c(i-width_b,i+width_b,i+width_b,i-width_b,i-width_b),
+          y=c(b_sub$bvxmin,b_sub$bvxmin,b_sub$bvxmax,b_sub$bvxmax,b_sub$bvxmin),col="white")
+  segments(x0=i-width_b,x1=i+width_b,y0=as.numeric(b_sub$vxmedian),y1=as.numeric(b_sub$vxmedian),lwd=2)
+  i=i+1
+}
+
+
+
+##vy
+plot(NA,NA,xlim=c(-0.5,12.5),ylim=c(-0.4,0.4),axes=F,xlab="",ylab="Uncertainty of velocity in north-south-direction",las=1)
+axis(side=1,at=0:12,labels=stats$period_text)
+axis(side=2,at=seq(-0.4,0.4,0.1),las=1)
+abline(h=0)
+i=0
+width=0.2
+width_b=0.3
+file=stats$file[1]
+for (file in unique(stats$file)){
+  b_sub=stats[stats$file==file,]
+  segments(x0=i,x1=i,y0=as.numeric(b_sub$wvymin),y1=as.numeric(b_sub$wvymax))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wvymin),y1=as.numeric(b_sub$wvymin))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wvymax),y1=as.numeric(b_sub$wvymax))
+  
+  ##uncertainty following Fleischer et al. 2021
+  #uncert=as.numeric(b_sub$vel_mean)+2*as.numeric(b_sub$vel_sd)
+  #print(uncert)
+  #segments(x0=i-width,x1=i+width,y0=uncert,y1=uncert,col="red")
+  
+  polygon(x=c(i-width_b,i+width_b,i+width_b,i-width_b,i-width_b),
+          y=c(b_sub$bvymin,b_sub$bvymin,b_sub$bvymax,b_sub$bvymax,b_sub$bvymin),col="white")
+  segments(x0=i-width_b,x1=i+width_b,y0=as.numeric(b_sub$vymedian),y1=as.numeric(b_sub$vymedian),lwd=2)
+  i=i+1
+}
+
+
+
+##vz
+plot(NA,NA,xlim=c(-0.5,12.5),ylim=c(-0.4,0.4),axes=F,xlab="",ylab="Uncertainty of velocity in vertical direction",las=1)
+axis(side=1,at=0:12,labels=stats$period_text)
+axis(side=2,at=seq(-0.4,0.4,0.1),las=1)
+abline(h=0)
+i=0
+width=0.2
+width_b=0.3
+file=stats$file[1]
+for (file in unique(stats$file)){
+  b_sub=stats[stats$file==file,]
+  segments(x0=i,x1=i,y0=as.numeric(b_sub$wvzmin),y1=as.numeric(b_sub$wvzmax))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wvzmin),y1=as.numeric(b_sub$wvzmin))
+  segments(x0=i-width,x1=i+width,y0=as.numeric(b_sub$wvzmax),y1=as.numeric(b_sub$wvzmax))
+  
+  ##uncertainty following Fleischer et al. 2021
+  #uncert=as.numeric(b_sub$vel_mean)+2*as.numeric(b_sub$vel_sd)
+  #print(uncert)
+  #segments(x0=i-width,x1=i+width,y0=uncert,y1=uncert,col="red")
+  
+  polygon(x=c(i-width_b,i+width_b,i+width_b,i-width_b,i-width_b),
+          y=c(b_sub$bvzmin,b_sub$bvzmin,b_sub$bvzmax,b_sub$bvzmax,b_sub$bvzmin),col="white")
+  segments(x0=i-width_b,x1=i+width_b,y0=as.numeric(b_sub$vzmedian),y1=as.numeric(b_sub$vzmedian),lwd=2)
+  i=i+1
+}
+
+mean(b_sub$vxmedian)
+mean(b_sub$vymedian)
+mean(b_sub$vzmedian)
+
+stats
+write.table(stats,"stats.csv",sep=";",quote=F,row.names=F)
+
+```
+
+
