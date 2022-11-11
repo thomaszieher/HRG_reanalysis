@@ -17,7 +17,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ## - copy needed shapefiles into the respective folders (see below)   ##
 ##                                                                    ##
 ##set root folder                                                     ##
-root=""                                                               ##
+root="Z:\\igf-allgemein\\HEK_Blockgletscher\\DatenChristoph\\HEK_PC\\GKWest"                                                               ##
 setwd(root)                                                           ##
 ##                                                                    ##
 ##input folders                                                       ##
@@ -106,7 +106,7 @@ rast_vel=function(pts,template,maxdisp=35,minstrength=5,maxerror=10,mode="vel",p
 
 
 ##filter and scale vectors
-scaled_pts=function(pts,scaling=1,maxdisp=35,minstrength=5,maxerror=10,period){
+scaled_pts=function(pts,scaling=10,maxdisp=35,minstrength=5,maxerror=10,period){
   pts_data=pts@data
   pts_data["x"]=coordinates(pts)[,1]
   pts_data["y"]=coordinates(pts)[,2]
